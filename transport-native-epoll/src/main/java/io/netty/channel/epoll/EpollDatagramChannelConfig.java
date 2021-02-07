@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -15,6 +15,7 @@
  */
 package io.netty.channel.epoll;
 
+import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufAllocator;
 import io.netty.channel.ChannelException;
 import io.netty.channel.ChannelOption;
@@ -23,6 +24,7 @@ import io.netty.channel.MessageSizeEstimator;
 import io.netty.channel.RecvByteBufAllocator;
 import io.netty.channel.WriteBufferWaterMark;
 import io.netty.channel.socket.DatagramChannelConfig;
+import io.netty.util.internal.ObjectUtil;
 
 import java.io.IOException;
 import java.net.InetAddress;
@@ -32,6 +34,7 @@ import java.util.Map;
 public final class EpollDatagramChannelConfig extends EpollChannelConfig implements DatagramChannelConfig {
     private static final RecvByteBufAllocator DEFAULT_RCVBUF_ALLOCATOR = new FixedRecvByteBufAllocator(2048);
     private boolean activeOnOpen;
+    private volatile int maxDatagramSize;
 
     EpollDatagramChannelConfig(EpollDatagramChannel channel) {
         super(channel);
@@ -48,7 +51,7 @@ public final class EpollDatagramChannelConfig extends EpollChannelConfig impleme
                 ChannelOption.IP_MULTICAST_ADDR, ChannelOption.IP_MULTICAST_IF, ChannelOption.IP_MULTICAST_TTL,
                 ChannelOption.IP_TOS, ChannelOption.DATAGRAM_CHANNEL_ACTIVE_ON_REGISTRATION,
                 EpollChannelOption.SO_REUSEPORT, EpollChannelOption.IP_FREEBIND, EpollChannelOption.IP_TRANSPARENT,
-                EpollChannelOption.IP_RECVORIGDSTADDR);
+                EpollChannelOption.IP_RECVORIGDSTADDR, EpollChannelOption.MAX_DATAGRAM_PAYLOAD_SIZE);
     }
 
     @SuppressWarnings({ "unchecked", "deprecation" })
@@ -96,6 +99,9 @@ public final class EpollDatagramChannelConfig extends EpollChannelConfig impleme
         if (option == EpollChannelOption.IP_RECVORIGDSTADDR) {
             return (T) Boolean.valueOf(isIpRecvOrigDestAddr());
         }
+        if (option == EpollChannelOption.MAX_DATAGRAM_PAYLOAD_SIZE) {
+            return (T) Integer.valueOf(getMaxDatagramPayloadSize());
+        }
         return super.getOption(option);
     }
 
@@ -132,6 +138,8 @@ public final class EpollDatagramChannelConfig extends EpollChannelConfig impleme
             setIpTransparent((Boolean) value);
         } else if (option == EpollChannelOption.IP_RECVORIGDSTADDR) {
             setIpRecvOrigDestAddr((Boolean) value);
+        } else if (option == EpollChannelOption.MAX_DATAGRAM_PAYLOAD_SIZE) {
+            setMaxDatagramPayloadSize((Integer) value);
         } else {
             return super.setOption(option, value);
         }
@@ -316,12 +324,21 @@ public final class EpollDatagramChannelConfig extends EpollChannelConfig impleme
 
     @Override
     public boolean isLoopbackModeDisabled() {
-        return false;
+        try {
+            return ((EpollDatagramChannel) channel).socket.isLoopbackModeDisabled();
+        } catch (IOException e) {
+            throw new ChannelException(e);
+        }
     }
 
     @Override
     public DatagramChannelConfig setLoopbackModeDisabled(boolean loopbackModeDisabled) {
-        throw new UnsupportedOperationException("Multicast not supported");
+        try {
+            ((EpollDatagramChannel) channel).socket.setLoopbackModeDisabled(loopbackModeDisabled);
+            return this;
+        } catch (IOException e) {
+            throw new ChannelException(e);
+        }
     }
 
     @Override
@@ -345,7 +362,11 @@ public final class EpollDatagramChannelConfig extends EpollChannelConfig impleme
 
     @Override
     public InetAddress getInterface() {
-        return null;
+        try {
+            return ((EpollDatagramChannel) channel).socket.getInterface();
+        } catch (IOException e) {
+            throw new ChannelException(e);
+        }
     }
 
     @Override
@@ -360,7 +381,11 @@ public final class EpollDatagramChannelConfig extends EpollChannelConfig impleme
 
     @Override
     public NetworkInterface getNetworkInterface() {
-        return null;
+        try {
+            return ((EpollDatagramChannel) channel).socket.getNetworkInterface();
+        } catch (IOException e) {
+            throw new ChannelException(e);
+        }
     }
 
     @Override
@@ -408,7 +433,7 @@ public final class EpollDatagramChannelConfig extends EpollChannelConfig impleme
     }
 
     /**
-     * Returns {@code true} if <a href="http://man7.org/linux/man-pages/man7/ip.7.html">IP_TRANSPARENT</a> is enabled,
+     * Returns {@code true} if <a href="https://man7.org/linux/man-pages/man7/ip.7.html">IP_TRANSPARENT</a> is enabled,
      * {@code false} otherwise.
      */
     public boolean isIpTransparent() {
@@ -420,7 +445,7 @@ public final class EpollDatagramChannelConfig extends EpollChannelConfig impleme
     }
 
     /**
-     * If {@code true} is used <a href="http://man7.org/linux/man-pages/man7/ip.7.html">IP_TRANSPARENT</a> is enabled,
+     * If {@code true} is used <a href="https://man7.org/linux/man-pages/man7/ip.7.html">IP_TRANSPARENT</a> is enabled,
      * {@code false} for disable it. Default is disabled.
      */
     public EpollDatagramChannelConfig setIpTransparent(boolean ipTransparent) {
@@ -433,7 +458,7 @@ public final class EpollDatagramChannelConfig extends EpollChannelConfig impleme
     }
 
     /**
-     * Returns {@code true} if <a href="http://man7.org/linux/man-pages/man7/ip.7.html">IP_FREEBIND</a> is enabled,
+     * Returns {@code true} if <a href="https://man7.org/linux/man-pages/man7/ip.7.html">IP_FREEBIND</a> is enabled,
      * {@code false} otherwise.
      */
     public boolean isFreeBind() {
@@ -445,7 +470,7 @@ public final class EpollDatagramChannelConfig extends EpollChannelConfig impleme
     }
 
     /**
-     * If {@code true} is used <a href="http://man7.org/linux/man-pages/man7/ip.7.html">IP_FREEBIND</a> is enabled,
+     * If {@code true} is used <a href="https://man7.org/linux/man-pages/man7/ip.7.html">IP_FREEBIND</a> is enabled,
      * {@code false} for disable it. Default is disabled.
      */
     public EpollDatagramChannelConfig setFreeBind(boolean freeBind) {
@@ -458,7 +483,7 @@ public final class EpollDatagramChannelConfig extends EpollChannelConfig impleme
     }
 
     /**
-     * Returns {@code true} if <a href="http://man7.org/linux/man-pages/man7/ip.7.html">IP_RECVORIGDSTADDR</a> is
+     * Returns {@code true} if <a href="https://man7.org/linux/man-pages/man7/ip.7.html">IP_RECVORIGDSTADDR</a> is
      * enabled, {@code false} otherwise.
      */
     public boolean isIpRecvOrigDestAddr() {
@@ -470,7 +495,7 @@ public final class EpollDatagramChannelConfig extends EpollChannelConfig impleme
     }
 
     /**
-     * If {@code true} is used <a href="http://man7.org/linux/man-pages/man7/ip.7.html">IP_RECVORIGDSTADDR</a> is
+     * If {@code true} is used <a href="https://man7.org/linux/man-pages/man7/ip.7.html">IP_RECVORIGDSTADDR</a> is
      * enabled, {@code false} for disable it. Default is disabled.
      */
     public EpollDatagramChannelConfig setIpRecvOrigDestAddr(boolean ipTransparent) {
@@ -482,4 +507,23 @@ public final class EpollDatagramChannelConfig extends EpollChannelConfig impleme
         }
     }
 
+    /**
+     * Set the maximum {@link io.netty.channel.socket.DatagramPacket} size. This will be used to determine if
+     * {@code recvmmsg} should be used when reading from the underlying socket. When {@code recvmmsg} is used
+     * we may be able to read multiple {@link io.netty.channel.socket.DatagramPacket}s with one syscall and so
+     * greatly improve the performance. This number will be used to slice {@link ByteBuf}s returned by the used
+     * {@link RecvByteBufAllocator}. You can use {@code 0} to disable the usage of recvmmsg, any other bigger value
+     * will enable it.
+     */
+    public EpollDatagramChannelConfig setMaxDatagramPayloadSize(int maxDatagramSize) {
+        this.maxDatagramSize = ObjectUtil.checkPositiveOrZero(maxDatagramSize, "maxDatagramSize");
+        return this;
+    }
+
+    /**
+     * Get the maximum {@link io.netty.channel.socket.DatagramPacket} size.
+     */
+    public int getMaxDatagramPayloadSize() {
+        return maxDatagramSize;
+    }
 }

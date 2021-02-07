@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -18,11 +18,14 @@ package io.netty.channel;
 import io.netty.util.concurrent.FastThreadLocal;
 import io.netty.util.internal.PlatformDependent;
 
+import io.netty.util.internal.logging.InternalLogger;
+import io.netty.util.internal.logging.InternalLoggerFactory;
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Inherited;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
+import java.lang.reflect.Method;
 import java.net.SocketAddress;
 import java.security.AccessController;
 import java.security.PrivilegedExceptionAction;
@@ -30,6 +33,7 @@ import java.util.Map;
 import java.util.WeakHashMap;
 
 final class ChannelHandlerMask {
+    private static final InternalLogger logger = InternalLoggerFactory.getInstance(ChannelHandlerMask.class);
 
     // Using to mask which methods must be called for a ChannelHandler.
     static final int MASK_EXCEPTION_CAUGHT = 1;
@@ -50,11 +54,13 @@ final class ChannelHandlerMask {
     static final int MASK_WRITE = 1 << 15;
     static final int MASK_FLUSH = 1 << 16;
 
-    private static final int MASK_ALL_INBOUND = MASK_EXCEPTION_CAUGHT | MASK_CHANNEL_REGISTERED |
+    static final int MASK_ONLY_INBOUND =  MASK_CHANNEL_REGISTERED |
             MASK_CHANNEL_UNREGISTERED | MASK_CHANNEL_ACTIVE | MASK_CHANNEL_INACTIVE | MASK_CHANNEL_READ |
             MASK_CHANNEL_READ_COMPLETE | MASK_USER_EVENT_TRIGGERED | MASK_CHANNEL_WRITABILITY_CHANGED;
-    private static final int MASK_ALL_OUTBOUND = MASK_EXCEPTION_CAUGHT | MASK_BIND | MASK_CONNECT | MASK_DISCONNECT |
+    private static final int MASK_ALL_INBOUND = MASK_EXCEPTION_CAUGHT | MASK_ONLY_INBOUND;
+    static final int MASK_ONLY_OUTBOUND =  MASK_BIND | MASK_CONNECT | MASK_DISCONNECT |
             MASK_CLOSE | MASK_DEREGISTER | MASK_READ | MASK_WRITE | MASK_FLUSH;
+    private static final int MASK_ALL_OUTBOUND = MASK_EXCEPTION_CAUGHT | MASK_ONLY_OUTBOUND;
 
     private static final FastThreadLocal<Map<Class<? extends ChannelHandler>, Integer>> MASKS =
             new FastThreadLocal<Map<Class<? extends ChannelHandler>, Integer>>() {
@@ -163,7 +169,17 @@ final class ChannelHandlerMask {
         return AccessController.doPrivileged(new PrivilegedExceptionAction<Boolean>() {
             @Override
             public Boolean run() throws Exception {
-                return handlerType.getMethod(methodName, paramTypes).isAnnotationPresent(Skip.class);
+                Method m;
+                try {
+                    m = handlerType.getMethod(methodName, paramTypes);
+                } catch (NoSuchMethodException e) {
+                    if (logger.isDebugEnabled()) {
+                        logger.debug(
+                            "Class {} missing method {}, assume we can not skip execution", handlerType, methodName, e);
+                    }
+                    return false;
+                }
+                return m != null && m.isAnnotationPresent(Skip.class);
             }
         });
     }

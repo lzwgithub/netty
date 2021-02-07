@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -14,6 +14,8 @@
  * under the License.
  */
 package io.netty.handler.ssl;
+
+import io.netty.util.internal.SuppressJava6Requirement;
 
 import javax.net.ssl.ExtendedSSLSession;
 import javax.net.ssl.SSLException;
@@ -29,6 +31,7 @@ import java.util.List;
  * Delegates all operations to a wrapped {@link OpenSslSession} except the methods defined by {@link ExtendedSSLSession}
  * itself.
  */
+@SuppressJava6Requirement(reason = "Usage guarded by java version check")
 abstract class ExtendedOpenSslSession extends ExtendedSSLSession implements OpenSslSession {
 
     // TODO: use OpenSSL API to actually fetch the real data but for now just do what Conscrypt does:
@@ -46,6 +49,7 @@ abstract class ExtendedOpenSslSession extends ExtendedSSLSession implements Open
     }
 
     // Use rawtypes an unchecked override to be able to also work on java7.
+    @Override
     @SuppressWarnings({ "unchecked", "rawtypes" })
     public abstract List getRequestedServerNames();
 

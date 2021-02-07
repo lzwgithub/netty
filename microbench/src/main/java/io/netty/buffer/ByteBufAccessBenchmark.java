@@ -5,7 +5,7 @@
 * version 2.0 (the "License"); you may not use this file except in compliance
 * with the License. You may obtain a copy of the License at:
 *
-*   http://www.apache.org/licenses/LICENSE-2.0
+*   https://www.apache.org/licenses/LICENSE-2.0
 *
 * Unless required by applicable law or agreed to in writing, software
 * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -149,6 +149,14 @@ public class ByteBufAccessBenchmark extends AbstractMicrobenchmark {
     public int readBatch() {
         buffer.readerIndex(0).touch();
         int result = 0;
+        // WARNING!
+        // Please do not replace this sum loop with a BlackHole::consume loop:
+        // BlackHole::consume could prevent the JVM to perform certain optimizations
+        // forcing ByteBuf::readByte to be executed in order.
+        // The purpose of the benchmark is to mimic accesses on ByteBuf
+        // as in a real (single-threaded) case ie without (compiler) memory barriers that would
+        // disable certain optimizations or would make bounds checks (if enabled)
+        // to happen on each access.
         for (int i = 0, size = batchSize; i < size; i++) {
             result += buffer.readByte();
         }

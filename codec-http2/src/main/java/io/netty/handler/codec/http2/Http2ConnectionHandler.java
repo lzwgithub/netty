@@ -5,7 +5,7 @@
  * "License"); you may not use this file except in compliance with the License. You may obtain a
  * copy of the License at:
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software distributed under the License
  * is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
@@ -322,7 +322,7 @@ public class Http2ConnectionHandler extends ByteToMessageDecoder implements Http
          * Peeks at that the next frame in the buffer and verifies that it is a non-ack {@code SETTINGS} frame.
          *
          * @param in the inbound buffer.
-         * @return {@code} true if the next frame is a non-ack {@code SETTINGS} frame, {@code false} if more
+         * @return {@code true} if the next frame is a non-ack {@code SETTINGS} frame, {@code false} if more
          * data is required before we can determine the next frame type.
          * @throws Http2Exception thrown if the next frame is NOT a non-ack {@code SETTINGS} frame.
          */
@@ -477,19 +477,27 @@ public class Http2ConnectionHandler extends ByteToMessageDecoder implements Http
         doGracefulShutdown(ctx, f, promise);
     }
 
+    private ChannelFutureListener newClosingChannelFutureListener(
+            ChannelHandlerContext ctx, ChannelPromise promise) {
+        long gracefulShutdownTimeoutMillis = this.gracefulShutdownTimeoutMillis;
+        return gracefulShutdownTimeoutMillis < 0 ?
+                new ClosingChannelFutureListener(ctx, promise) :
+                new ClosingChannelFutureListener(ctx, promise, gracefulShutdownTimeoutMillis, MILLISECONDS);
+    }
+
     private void doGracefulShutdown(ChannelHandlerContext ctx, ChannelFuture future, final ChannelPromise promise) {
+        final ChannelFutureListener listener = newClosingChannelFutureListener(ctx, promise);
         if (isGracefulShutdownComplete()) {
-            // If there are no active streams, close immediately after the GO_AWAY write completes.
-            future.addListener(new ClosingChannelFutureListener(ctx, promise));
+            // If there are no active streams, close immediately after the GO_AWAY write completes or the timeout
+            // elapsed.
+            future.addListener(listener);
         } else {
             // If there are active streams we should wait until they are all closed before closing the connection.
-            final ClosingChannelFutureListener tmp = gracefulShutdownTimeoutMillis < 0 ?
-                    new ClosingChannelFutureListener(ctx, promise) :
-                    new ClosingChannelFutureListener(ctx, promise, gracefulShutdownTimeoutMillis, MILLISECONDS);
+
             // The ClosingChannelFutureListener will cascade promise completion. We need to always notify the
             // new ClosingChannelFutureListener when the graceful close completes if the promise is not null.
             if (closeListener == null) {
-                closeListener = tmp;
+                closeListener = listener;
             } else if (promise != null) {
                 final ChannelFutureListener oldCloseListener = closeListener;
                 closeListener = new ChannelFutureListener() {
@@ -498,7 +506,7 @@ public class Http2ConnectionHandler extends ByteToMessageDecoder implements Http
                         try {
                             oldCloseListener.operationComplete(future);
                         } finally {
-                            tmp.operationComplete(future);
+                            listener.operationComplete(future);
                         }
                     }
                 };
@@ -665,7 +673,7 @@ public class Http2ConnectionHandler extends ByteToMessageDecoder implements Http
         if (http2Ex.shutdownHint() == Http2Exception.ShutdownHint.GRACEFUL_SHUTDOWN) {
             doGracefulShutdown(ctx, future, promise);
         } else {
-            future.addListener(new ClosingChannelFutureListener(ctx, promise));
+            future.addListener(newClosingChannelFutureListener(ctx, promise));
         }
     }
 
@@ -776,6 +784,13 @@ public class Http2ConnectionHandler extends ByteToMessageDecoder implements Http
             // Don't write a RST_STREAM frame if we have already written one.
             return promise.setSuccess();
         }
+        // Synchronously set the resetSent flag to prevent any subsequent calls
+        // from resulting in multiple reset frames being sent.
+        //
+        // This needs to be done before we notify the promise as the promise may have a listener attached that
+        // call resetStream(...) again.
+        stream.resetSent();
+
         final ChannelFuture future;
         // If the remote peer is not aware of the steam, then we are not allowed to send a RST_STREAM
         // https://tools.ietf.org/html/rfc7540#section-6.4.
@@ -785,11 +800,6 @@ public class Http2ConnectionHandler extends ByteToMessageDecoder implements Http
         } else {
             future = frameWriter().writeRstStream(ctx, stream.id(), errorCode, promise);
         }
-
-        // Synchronously set the resetSent flag to prevent any subsequent calls
-        // from resulting in multiple reset frames being sent.
-        stream.resetSent();
-
         if (future.isDone()) {
             processRstStreamWriteResult(ctx, stream, future);
         } else {
@@ -836,12 +846,6 @@ public class Http2ConnectionHandler extends ByteToMessageDecoder implements Http
                 }
             });
         }
-        // if closeListener != null this means we have already initiated graceful closure. doGracefulShutdown will apply
-        // the gracefulShutdownTimeoutMillis on each invocation, however we only care to apply the timeout on the
-        // start of graceful shutdown.
-        if (errorCode == NO_ERROR.code() && closeListener == null) {
-            doGracefulShutdown(ctx, future, null);
-        }
 
         return future;
     }
@@ -872,7 +876,16 @@ public class Http2ConnectionHandler extends ByteToMessageDecoder implements Http
      */
     private ChannelFuture goAway(ChannelHandlerContext ctx, Http2Exception cause, ChannelPromise promise) {
         long errorCode = cause != null ? cause.error().code() : NO_ERROR.code();
-        int lastKnownStream = connection().remote().lastStreamCreated();
+        int lastKnownStream;
+        if (cause != null && cause.shutdownHint() == Http2Exception.ShutdownHint.HARD_SHUTDOWN) {
+            // The hard shutdown could have been triggered during header processing, before updating
+            // lastStreamCreated(). Specifically, any connection errors encountered by Http2FrameReader or HPACK
+            // decoding will fail to update the last known stream. So we must be pessimistic.
+            // https://github.com/netty/netty/issues/10670
+            lastKnownStream = Integer.MAX_VALUE;
+        } else {
+            lastKnownStream = connection().remote().lastStreamCreated();
+        }
         return goAway(ctx, lastKnownStream, errorCode, Http2CodecUtil.toByteBuf(ctx, cause), promise);
     }
 
@@ -931,6 +944,7 @@ public class Http2ConnectionHandler extends ByteToMessageDecoder implements Http
         private final ChannelHandlerContext ctx;
         private final ChannelPromise promise;
         private final ScheduledFuture<?> timeoutTask;
+        private boolean closed;
 
         ClosingChannelFutureListener(ChannelHandlerContext ctx, ChannelPromise promise) {
             this.ctx = ctx;
@@ -959,6 +973,14 @@ public class Http2ConnectionHandler extends ByteToMessageDecoder implements Http
         }
 
         private void doClose() {
+            // We need to guard against multiple calls as the timeout may trigger close() first and then it will be
+            // triggered again because of operationComplete(...) is called.
+            if (closed) {
+                // This only happens if we also scheduled a timeout task.
+                assert timeoutTask != null;
+                return;
+            }
+            closed = true;
             if (promise == null) {
                 ctx.close();
             } else {

@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -34,6 +34,8 @@
 #include "netty_unix_jni.h"
 #include "netty_unix_socket.h"
 #include "netty_unix_util.h"
+
+#define LINUXSOCKET_CLASSNAME "io/netty/channel/epoll/LinuxSocket"
 
 // TCP_FASTOPEN is defined in linux 3.7. We define this here so older kernels can compile.
 #ifndef TCP_FASTOPEN
@@ -68,10 +70,22 @@ static void netty_epoll_linuxsocket_setTimeToLive(JNIEnv* env, jclass clazz, jin
     netty_unix_socket_setOption(env, fd, IPPROTO_IP, IP_TTL, &optval, sizeof(optval));
 }
 
+static void netty_epoll_linuxsocket_setIpMulticastLoop(JNIEnv* env, jclass clazz, jint fd, jboolean ipv6, jint optval) {
+    if (ipv6 == JNI_TRUE) {
+        u_int val = (u_int) optval;
+        netty_unix_socket_setOption(env, fd, IPPROTO_IPV6, IPV6_MULTICAST_LOOP, &val, sizeof(val));
+    } else {
+        u_char val = (u_char) optval;
+        netty_unix_socket_setOption(env, fd, IPPROTO_IP, IP_MULTICAST_LOOP, &val, sizeof(val));
+    }
+}
+
 static void netty_epoll_linuxsocket_setInterface(JNIEnv* env, jclass clazz, jint fd, jboolean ipv6, jbyteArray interfaceAddress, jint scopeId, jint interfaceIndex) {
     struct sockaddr_storage interfaceAddr;
     socklen_t interfaceAddrSize;
     struct sockaddr_in* interfaceIpAddr;
+
+    memset(&interfaceAddr, 0, sizeof(interfaceAddr));
 
     if (ipv6 == JNI_TRUE) {
         if (interfaceIndex == -1) {
@@ -158,6 +172,9 @@ static void netty_epoll_linuxsocket_joinGroup(JNIEnv* env, jclass clazz, jint fd
     struct sockaddr_in6* groupIp6Addr;
     struct ipv6_mreq mreq6;
 
+    memset(&groupAddr, 0, sizeof(groupAddr));
+    memset(&interfaceAddr, 0, sizeof(interfaceAddr));
+
     if (netty_unix_socket_initSockaddr(env, ipv6, groupAddress, scopeId, 0, &groupAddr, &groupAddrSize) == -1) {
         netty_unix_errors_throwIOException(env, "Could not init sockaddr for groupAddress");
         return;
@@ -207,6 +224,10 @@ static void netty_epoll_linuxsocket_joinSsmGroup(JNIEnv* env, jclass clazz, jint
     struct ip_mreq_source mreq;
 
     struct group_source_req mreq6;
+
+    memset(&groupAddr, 0, sizeof(groupAddr));
+    memset(&sourceAddr, 0, sizeof(sourceAddr));
+    memset(&interfaceAddr, 0, sizeof(interfaceAddr));
 
     if (netty_unix_socket_initSockaddr(env, ipv6, groupAddress, scopeId, 0, &groupAddr, &groupAddrSize) == -1) {
         netty_unix_errors_throwIOException(env, "Could not init sockaddr for groupAddress");
@@ -261,6 +282,9 @@ static void netty_epoll_linuxsocket_leaveGroup(JNIEnv* env, jclass clazz, jint f
     struct sockaddr_in6* groupIp6Addr;
     struct ipv6_mreq mreq6;
 
+    memset(&groupAddr, 0, sizeof(groupAddr));
+    memset(&interfaceAddr, 0, sizeof(interfaceAddr));
+
     if (netty_unix_socket_initSockaddr(env, ipv6, groupAddress, scopeId, 0, &groupAddr, &groupAddrSize) == -1) {
         netty_unix_errors_throwIOException(env, "Could not init sockaddr for groupAddress");
         return;
@@ -310,6 +334,10 @@ static void netty_epoll_linuxsocket_leaveSsmGroup(JNIEnv* env, jclass clazz, jin
     struct ip_mreq_source mreq;
     struct group_source_req mreq6;
 
+    memset(&groupAddr, 0, sizeof(groupAddr));
+    memset(&sourceAddr, 0, sizeof(sourceAddr));
+    memset(&interfaceAddr, 0, sizeof(interfaceAddr));
+
 
     if (netty_unix_socket_initSockaddr(env, ipv6, groupAddress, scopeId, 0, &groupAddr, &groupAddrSize) == -1) {
         netty_unix_errors_throwIOException(env, "Could not init sockaddr for groupAddress");
@@ -356,6 +384,9 @@ static void netty_epoll_linuxsocket_leaveSsmGroup(JNIEnv* env, jclass clazz, jin
 static void netty_epoll_linuxsocket_setTcpMd5Sig(JNIEnv* env, jclass clazz, jint fd, jboolean ipv6, jbyteArray address, jint scopeId, jbyteArray key) {
     struct sockaddr_storage addr;
     socklen_t addrSize;
+
+    memset(&addr, 0, sizeof(addr));
+
     if (netty_unix_socket_initSockaddr(env, ipv6, address, scopeId, 0, &addr, &addrSize) == -1) {
         netty_unix_errors_throwIOException(env, "Could not init sockaddr");
         return;
@@ -392,12 +423,46 @@ static void netty_epoll_linuxsocket_setTcpMd5Sig(JNIEnv* env, jclass clazz, jint
     }
 }
 
+static int netty_epoll_linuxsocket_getInterface(JNIEnv* env, jclass clazz, jint fd, jboolean ipv6) {
+    if (ipv6 == JNI_TRUE) {
+        int optval;
+        if (netty_unix_socket_getOption(env, fd, IPPROTO_IPV6, IPV6_MULTICAST_IF, &optval, sizeof(optval)) == -1) {
+            return -1;
+        }
+        return optval;
+    } else {
+        struct in_addr optval;
+        if (netty_unix_socket_getOption(env, fd, IPPROTO_IP, IP_MULTICAST_IF, &optval, sizeof(optval)) == -1) {
+            return -1;
+        }
+
+        return ntohl(optval.s_addr);
+    }
+}
+
 static jint netty_epoll_linuxsocket_getTimeToLive(JNIEnv* env, jclass clazz, jint fd) {
     int optval;
     if (netty_unix_socket_getOption(env, fd, IPPROTO_IP, IP_TTL, &optval, sizeof(optval)) == -1) {
         return -1;
     }
     return optval;
+}
+
+
+static jint netty_epoll_linuxsocket_getIpMulticastLoop(JNIEnv* env, jclass clazz, jint fd, jboolean ipv6) {
+    if (ipv6 == JNI_TRUE) {
+        u_int optval;
+        if (netty_unix_socket_getOption(env, fd, IPPROTO_IPV6, IPV6_MULTICAST_LOOP, &optval, sizeof(optval)) == -1) {
+            return -1;
+        }
+        return (jint) optval;
+    } else {
+        u_char optval;
+        if (netty_unix_socket_getOption(env, fd, IPPROTO_IP, IP_MULTICAST_LOOP, &optval, sizeof(optval)) == -1) {
+            return -1;
+        }
+        return (jint) optval;
+    }
 }
 
 static jint netty_epoll_linuxsocket_getTcpKeepIdle(JNIEnv* env, jclass clazz, jint fd) {
@@ -602,6 +667,9 @@ static const JNINativeMethod fixed_method_table[] = {
   { "setTimeToLive", "(II)V", (void *) netty_epoll_linuxsocket_setTimeToLive },
   { "getTimeToLive", "(I)I", (void *) netty_epoll_linuxsocket_getTimeToLive },
   { "setInterface", "(IZ[BII)V", (void *) netty_epoll_linuxsocket_setInterface },
+  { "getInterface", "(IZ)I", (void *) netty_epoll_linuxsocket_getInterface },
+  { "setIpMulticastLoop", "(IZI)V", (void * ) netty_epoll_linuxsocket_setIpMulticastLoop },
+  { "getIpMulticastLoop", "(IZ)I", (void * ) netty_epoll_linuxsocket_getIpMulticastLoop },
   { "setTcpCork", "(II)V", (void *) netty_epoll_linuxsocket_setTcpCork },
   { "setSoBusyPoll", "(II)V", (void *) netty_epoll_linuxsocket_setSoBusyPoll },
   { "setTcpQuickAck", "(II)V", (void *) netty_epoll_linuxsocket_setTcpQuickAck },
@@ -645,113 +713,88 @@ static jint dynamicMethodsTableSize() {
 }
 
 static JNINativeMethod* createDynamicMethodsTable(const char* packagePrefix) {
-    JNINativeMethod* dynamicMethods = malloc(sizeof(JNINativeMethod) * dynamicMethodsTableSize());
+    char* dynamicTypeName = NULL;
+    size_t size = sizeof(JNINativeMethod) * dynamicMethodsTableSize();
+    JNINativeMethod* dynamicMethods = malloc(size);
+    if (dynamicMethods == NULL) {
+        return NULL;
+    }
+    memset(dynamicMethods, 0, size);
     memcpy(dynamicMethods, fixed_method_table, sizeof(fixed_method_table));
+  
     JNINativeMethod* dynamicMethod = &dynamicMethods[fixed_method_table_size];
-    char* dynamicTypeName = netty_unix_util_prepend(packagePrefix, "io/netty/channel/unix/PeerCredentials;");
+    NETTY_JNI_UTIL_PREPEND(packagePrefix, "io/netty/channel/unix/PeerCredentials;", dynamicTypeName, error);
+    NETTY_JNI_UTIL_PREPEND("(I)L", dynamicTypeName,  dynamicMethod->signature, error);
     dynamicMethod->name = "getPeerCredentials";
-    dynamicMethod->signature = netty_unix_util_prepend("(I)L", dynamicTypeName);
     dynamicMethod->fnPtr = (void *) netty_epoll_linuxsocket_getPeerCredentials;
-    free(dynamicTypeName);
+    netty_jni_util_free_dynamic_name(&dynamicTypeName);
 
     ++dynamicMethod;
-    dynamicTypeName = netty_unix_util_prepend(packagePrefix, "io/netty/channel/DefaultFileRegion;JJJ)J");
+    NETTY_JNI_UTIL_PREPEND(packagePrefix, "io/netty/channel/DefaultFileRegion;JJJ)J", dynamicTypeName, error);
+    NETTY_JNI_UTIL_PREPEND("(IL", dynamicTypeName,  dynamicMethod->signature, error);
     dynamicMethod->name = "sendFile";
-    dynamicMethod->signature = netty_unix_util_prepend("(IL", dynamicTypeName);
     dynamicMethod->fnPtr = (void *) netty_epoll_linuxsocket_sendFile;
-    free(dynamicTypeName);
+    netty_jni_util_free_dynamic_name(&dynamicTypeName);
     return dynamicMethods;
+error:
+    free(dynamicTypeName);
+    netty_jni_util_free_dynamic_methods_table(dynamicMethods, fixed_method_table_size, dynamicMethodsTableSize());
+    return NULL;
 }
 
-static void freeDynamicMethodsTable(JNINativeMethod* dynamicMethods) {
-    jint fullMethodTableSize = dynamicMethodsTableSize();
-    jint i = fixed_method_table_size;
-    for (; i < fullMethodTableSize; ++i) {
-        free(dynamicMethods[i].signature);
-    }
-    free(dynamicMethods);
-}
 // JNI Method Registration Table End
 
 jint netty_epoll_linuxsocket_JNI_OnLoad(JNIEnv* env, const char* packagePrefix) {
+    int ret = JNI_ERR;
+    char* nettyClassName = NULL;
+    jclass fileRegionCls = NULL;
+    jclass fileChannelCls = NULL;
+    jclass fileDescriptorCls = NULL;
+    // Register the methods which are not referenced by static member variables
     JNINativeMethod* dynamicMethods = createDynamicMethodsTable(packagePrefix);
-    if (netty_unix_util_register_natives(env,
+    if (dynamicMethods == NULL) {
+        goto done;
+    }
+    if (netty_jni_util_register_natives(env,
             packagePrefix,
-            "io/netty/channel/epoll/LinuxSocket",
+            LINUXSOCKET_CLASSNAME,
             dynamicMethods,
             dynamicMethodsTableSize()) != 0) {
-        freeDynamicMethodsTable(dynamicMethods);
-        return JNI_ERR;
-    }
-    freeDynamicMethodsTable(dynamicMethods);
-    dynamicMethods = NULL;
-
-    char* nettyClassName = netty_unix_util_prepend(packagePrefix, "io/netty/channel/unix/PeerCredentials");
-    jclass localPeerCredsClass = (*env)->FindClass(env, nettyClassName);
-    free(nettyClassName);
-    nettyClassName = NULL;
-    if (localPeerCredsClass == NULL) {
-        // pending exception...
-        return JNI_ERR;
-    }
-    peerCredentialsClass = (jclass) (*env)->NewGlobalRef(env, localPeerCredsClass);
-    if (peerCredentialsClass == NULL) {
-        // out-of-memory!
-        netty_unix_errors_throwOutOfMemoryError(env);
-        return JNI_ERR;
-    }
-    peerCredentialsMethodId = (*env)->GetMethodID(env, peerCredentialsClass, "<init>", "(II[I)V");
-    if (peerCredentialsMethodId == NULL) {
-        netty_unix_errors_throwRuntimeException(env, "failed to get method ID: PeerCredentials.<init>(int, int, int[])");
-        return JNI_ERR;
+        goto done;
     }
 
-    nettyClassName = netty_unix_util_prepend(packagePrefix, "io/netty/channel/DefaultFileRegion");
-    jclass fileRegionCls = (*env)->FindClass(env, nettyClassName);
-    free(nettyClassName);
-    nettyClassName = NULL;
-    if (fileRegionCls == NULL) {
-        return JNI_ERR;
-    }
-    fileChannelFieldId = (*env)->GetFieldID(env, fileRegionCls, "file", "Ljava/nio/channels/FileChannel;");
-    if (fileChannelFieldId == NULL) {
-        netty_unix_errors_throwRuntimeException(env, "failed to get field ID: DefaultFileRegion.file");
-        return JNI_ERR;
-    }
-    transferredFieldId = (*env)->GetFieldID(env, fileRegionCls, "transferred", "J");
-    if (transferredFieldId == NULL) {
-        netty_unix_errors_throwRuntimeException(env, "failed to get field ID: DefaultFileRegion.transferred");
-        return JNI_ERR;
-    }
+    NETTY_JNI_UTIL_PREPEND(packagePrefix, "io/netty/channel/unix/PeerCredentials", nettyClassName, done);
+    NETTY_JNI_UTIL_LOAD_CLASS(env, peerCredentialsClass, nettyClassName, done);
+    netty_jni_util_free_dynamic_name(&nettyClassName);
 
-    jclass fileChannelCls = (*env)->FindClass(env, "sun/nio/ch/FileChannelImpl");
-    if (fileChannelCls == NULL) {
-        // pending exception...
-        return JNI_ERR;
-    }
-    fileDescriptorFieldId = (*env)->GetFieldID(env, fileChannelCls, "fd", "Ljava/io/FileDescriptor;");
-    if (fileDescriptorFieldId == NULL) {
-        netty_unix_errors_throwRuntimeException(env, "failed to get field ID: FileChannelImpl.fd");
-        return JNI_ERR;
-    }
+    NETTY_JNI_UTIL_GET_METHOD(env, peerCredentialsClass, peerCredentialsMethodId, "<init>", "(II[I)V", done);
 
-    jclass fileDescriptorCls = (*env)->FindClass(env, "java/io/FileDescriptor");
-    if (fileDescriptorCls == NULL) {
-        // pending exception...
-        return JNI_ERR;
-    }
-    fdFieldId = (*env)->GetFieldID(env, fileDescriptorCls, "fd", "I");
+    NETTY_JNI_UTIL_PREPEND(packagePrefix, "io/netty/channel/DefaultFileRegion", nettyClassName, done);
+    NETTY_JNI_UTIL_FIND_CLASS(env, fileRegionCls, nettyClassName, done);
+    netty_jni_util_free_dynamic_name(&nettyClassName);
+
+    NETTY_JNI_UTIL_GET_FIELD(env, fileRegionCls, fileChannelFieldId, "file", "Ljava/nio/channels/FileChannel;", done);
+    NETTY_JNI_UTIL_GET_FIELD(env, fileRegionCls, transferredFieldId, "transferred", "J", done);
+
+    NETTY_JNI_UTIL_FIND_CLASS(env, fileChannelCls, "sun/nio/ch/FileChannelImpl", done);
+    NETTY_JNI_UTIL_GET_FIELD(env, fileChannelCls, fileDescriptorFieldId, "fd", "Ljava/io/FileDescriptor;", done);
+
+    NETTY_JNI_UTIL_FIND_CLASS(env, fileDescriptorCls, "java/io/FileDescriptor", done);
+    NETTY_JNI_UTIL_TRY_GET_FIELD(env, fileDescriptorCls, fdFieldId, "fd", "I");
     if (fdFieldId == NULL) {
-        netty_unix_errors_throwRuntimeException(env, "failed to get field ID: FileDescriptor.fd");
-        return JNI_ERR;
+         // Android uses a different field name, let's try it.
+         NETTY_JNI_UTIL_GET_FIELD(env, fileDescriptorCls, fdFieldId, "descriptor", "I", done);
     }
+    ret = NETTY_JNI_UTIL_JNI_VERSION;
+done:
+    netty_jni_util_free_dynamic_methods_table(dynamicMethods, fixed_method_table_size, dynamicMethodsTableSize());
+    free(nettyClassName);
 
-    return NETTY_JNI_VERSION;
+    return ret;
 }
 
-void netty_epoll_linuxsocket_JNI_OnUnLoad(JNIEnv* env) {
-    if (peerCredentialsClass != NULL) {
-        (*env)->DeleteGlobalRef(env, peerCredentialsClass);
-        peerCredentialsClass = NULL;
-    }
+void netty_epoll_linuxsocket_JNI_OnUnLoad(JNIEnv* env, const char* packagePrefix) {
+    NETTY_JNI_UTIL_UNLOAD_CLASS(env, peerCredentialsClass);
+
+    netty_jni_util_unregister_natives(env, packagePrefix, LINUXSOCKET_CLASSNAME);
 }
